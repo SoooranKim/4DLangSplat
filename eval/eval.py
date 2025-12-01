@@ -9,6 +9,7 @@ import os
 import glob
 import random
 import sys
+
 sys.path.append("..")
 import logging
 from openclip_encoder import OpenCLIPNetwork
@@ -24,6 +25,8 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
 import csv
+
+from utils.cache_utils import get_hf_cache_dir
 
 def get_logger(name, log_file=None, log_level=logging.INFO, file_mode='w'):
     logger = logging.getLogger(name)
@@ -556,7 +559,10 @@ if __name__ == '__main__':
 
     # load e5_model
     if args.apply_video_search:
-        e5_model = SentenceTransformer("intfloat/e5-mistral-7b-instruct")
+        e5_model = SentenceTransformer(
+            "intfloat/e5-mistral-7b-instruct",
+            cache_folder=get_hf_cache_dir(),
+        )
         e5_model.max_seq_length = 4096
         name2name_e5_embeddings = {}
         for _, values in replace_prompts.items():

@@ -8,14 +8,24 @@ from loguru import logger
 from sentence_transformers import SentenceTransformer
 import torch
 import numpy as np
+
+from utils.cache_utils import get_hf_cache_dir
 # from vllm import LLM, SamplingParams
 
-# default: Load the model on the available device(s)
+# default: Load the model on the available device(s), reusing local cache if present
+_HF_CACHE_DIR = get_hf_cache_dir()
+
 model = Qwen2VLForConditionalGeneration.from_pretrained(
-    "Qwen/Qwen2-VL-7B-Instruct", torch_dtype="auto", device_map="auto"
+    "Qwen/Qwen2-VL-7B-Instruct",
+    torch_dtype="auto",
+    device_map="auto",
+    cache_dir=_HF_CACHE_DIR,
 )
 
-processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
+processor = AutoProcessor.from_pretrained(
+    "Qwen/Qwen2-VL-7B-Instruct",
+    cache_dir=_HF_CACHE_DIR,
+)
 
 
 def video_caption_generate(video_path, prompt=None, nframes=8):
@@ -124,7 +134,10 @@ def chose_best_captions(video_caption_list):
     from sklearn.metrics.pairwise import cosine_similarity
 
     
-    model = SentenceTransformer("intfloat/e5-mistral-7b-instruct")
+    model = SentenceTransformer(
+        "intfloat/e5-mistral-7b-instruct",
+        cache_folder=_HF_CACHE_DIR,
+    )
     model.max_seq_length = 4096
     def get_embedding(text):
         

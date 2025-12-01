@@ -4,11 +4,16 @@ import numpy as np
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 import csv
-def encode_feature(caption_dir,feature_name,segmentation_dir):
+
+from utils.cache_utils import get_hf_cache_dir
+def encode_feature(caption_dir, feature_name, segmentation_dir):
     num_frames = len(os.listdir(segmentation_dir))
     print(f"num_frames:{num_frames}")
-    max_id = 0 
-    model = SentenceTransformer("intfloat/e5-mistral-7b-instruct")
+    max_id = 0
+    model = SentenceTransformer(
+        "intfloat/e5-mistral-7b-instruct",
+        cache_folder=get_hf_cache_dir(),
+    )
     model.max_seq_length = 4096
     output_text_list = [file for file in os.listdir(caption_dir) if "output_text_id" in file]
     os.makedirs(os.path.join(caption_dir,feature_name),exist_ok=True)

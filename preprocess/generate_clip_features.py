@@ -21,6 +21,8 @@ try:
 except ImportError:
     assert False, "open_clip is not installed, install it with `pip install open-clip-torch`"
 
+from utils.cache_utils import get_hf_cache_dir
+
 # from loguru import logger
 
 
@@ -50,6 +52,7 @@ class OpenCLIPNetwork(nn.Module):
             self.config.clip_model_type,  # e.g., ViT-B-16
             pretrained=self.config.clip_model_pretrained,  # e.g., laion2b_s34b_b88k
             precision="fp16",
+            cache_dir=get_hf_cache_dir(),
         )
         model.eval()
         self.tokenizer = open_clip.get_tokenizer(self.config.clip_model_type)
