@@ -1,8 +1,8 @@
-dataset_path=../data/hypernerf/chickchicken
+dataset_path=../data/hypernerf/
 image_dir=${dataset_path}/rgb/2x
-output_dir=preprocess_result/chickchicken
+output_dir=preprocess_result/keyboard
 video_features_name=video_features
-segmentation_dir=../submodules/4d-langsplat-tracking-anything-with-deva/output/large/origin_mask_large
+segmentation_dir=../submodules/4d-langsplat-tracking-anything-with-deva/output/keyboard/large/origin_mask_large
 cd preprocess
 python generate_image_prompt.py \
     --mask_dir ${segmentation_dir} \

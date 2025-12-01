@@ -15,11 +15,18 @@ from copy import deepcopy
 import torch
 import torchvision
 from torch import nn
+import sys
+from pathlib import Path
 
 try:
     import open_clip
 except ImportError:
     assert False, "open_clip is not installed, install it with `pip install open-clip-torch`"
+
+# allow importing utils from project root when running from preprocess/
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from utils.cache_utils import get_hf_cache_dir
 

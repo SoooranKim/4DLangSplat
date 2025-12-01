@@ -1,6 +1,8 @@
 from transformers import Qwen2VLForConditionalGeneration, AutoTokenizer, AutoProcessor
 from qwen_vl_utils import process_vision_info
 import os
+import sys
+from pathlib import Path
 import csv
 from tqdm import tqdm
 import argparse
@@ -8,6 +10,11 @@ from loguru import logger
 from sentence_transformers import SentenceTransformer
 import torch
 import numpy as np
+
+# allow importing utils from project root when running from preprocess/
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from utils.cache_utils import get_hf_cache_dir
 # from vllm import LLM, SamplingParams

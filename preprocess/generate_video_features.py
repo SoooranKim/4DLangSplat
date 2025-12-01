@@ -1,9 +1,16 @@
 import argparse
 import os
+import sys
+from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 import csv
+
+# allow importing utils from project root when running from preprocess/
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from utils.cache_utils import get_hf_cache_dir
 def encode_feature(caption_dir, feature_name, segmentation_dir):
