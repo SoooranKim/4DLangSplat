@@ -31,6 +31,7 @@ if __name__ == '__main__':
                     default=512
                     )
     # parser.add_argument("--output_dim", type=int, default=3)
+    parser.add_argument('--num_workers',type=int,default=8)
     parser.add_argument('--language_name', type = str, default = None)
     parser.add_argument('--output_name',type=str,default=None)
     args = parser.parse_args()
@@ -70,7 +71,7 @@ if __name__ == '__main__':
         dataset=train_dataset, 
         batch_size=256,
         shuffle=False, 
-        num_workers=16, 
+        num_workers=args.num_workers, 
         drop_last=False   
     )
 

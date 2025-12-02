@@ -50,6 +50,7 @@ if __name__ == '__main__':
                     )
     parser.add_argument('--batch_size',type=int,default=64)
     parser.add_argument('--cos_weight',type=float,default=1e-3)
+    parser.add_argument('--num_workers',type=int,default=8)
     parser.add_argument('--model_name', type=str, required=True)
     parser.add_argument('--language_name', type = str, default = None)
 
@@ -74,7 +75,7 @@ if __name__ == '__main__':
         dataset=train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=16,
+        num_workers=args.num_workers,
         drop_last=False
     )
 
@@ -82,7 +83,7 @@ if __name__ == '__main__':
         dataset=test_dataset,
         batch_size=256,
         shuffle=False,
-        num_workers=16,
+        num_workers=args.num_workers,
         drop_last=False  
     )
     

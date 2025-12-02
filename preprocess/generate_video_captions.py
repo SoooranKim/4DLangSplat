@@ -201,7 +201,7 @@ if __name__ =="__main__":
             if len(os.listdir(f"{args.video_file}/{obj_id:02}"))<20:
                 continue
             video_captions = []
-            n_frame = min(int(round(num_frames/args.fps)),18)
+            n_frame = min(int(round(num_frames/args.fps)),8)
             logger.info(f"n_frame:{n_frame}")
 
             video_caption = video_caption_generate(f"{args.video_file}/{obj_id:02}.mp4",prompt=args.video_prompt, nframes=n_frame)
