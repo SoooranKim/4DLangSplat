@@ -71,12 +71,15 @@ if __name__ == '__main__':
     else:
         test_dataset = train_dataset
 
+    print(f"Creating DataLoader with num_workers={args.num_workers}")
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        drop_last=False
+        drop_last=False,
+        pin_memory=True,  # GPU 전송 속도 향상
+        persistent_workers=False  # num_workers=0일 때는 항상 False
     )
 
     test_loader = DataLoader(
@@ -84,8 +87,11 @@ if __name__ == '__main__':
         batch_size=256,
         shuffle=False,
         num_workers=args.num_workers,
-        drop_last=False  
+        drop_last=False,
+        pin_memory=True,  # GPU 전송 속도 향상
+        persistent_workers=False  # num_workers=0일 때는 항상 False
     )
+    print(f"DataLoader created successfully with num_workers={args.num_workers}")
     
     encoder_hidden_dims = args.encoder_dims
     decoder_hidden_dims = args.decoder_dims

@@ -9,7 +9,6 @@ import os
 import glob
 import random
 import sys
-
 sys.path.append("..")
 import logging
 from openclip_encoder import OpenCLIPNetwork
@@ -25,8 +24,6 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
 import csv
-
-from utils.cache_utils import get_hf_cache_dir
 
 def get_logger(name, log_file=None, log_level=logging.INFO, file_mode='w'):
     logger = logging.getLogger(name)
@@ -509,8 +506,14 @@ if __name__ == '__main__':
         video_feature_list = os.listdir(video_feature_dir)
         video_feature_list.sort()
         video_features = []
-        for name in video_feature_list:
+        logger.info(f"Loading video features from {video_feature_dir} ({len(video_feature_list)} files)")
+        if len(video_feature_list) == 0:
+            logger.warning(f"No video feature files found under {video_feature_dir}")
+        log_interval = max(1, len(video_feature_list) // 10) if len(video_feature_list) else 1
+        for idx, name in enumerate(video_feature_list):
             video_features.append(np.load(os.path.join(video_feature_dir,name)))
+            if len(video_feature_list) and (((idx + 1) % log_interval == 0) or (idx + 1 == len(video_feature_list))):
+                logger.info(f"Loaded {idx + 1}/{len(video_feature_list)} video feature files")
 
     else:
         video_features = []
@@ -528,6 +531,7 @@ if __name__ == '__main__':
     replace_prompts = {}
     prompts_for_video = []
     if args.apply_video_search:
+        logger.info(f"Loading video frame annotations from {args.video_frame_gt_path}")
         with open(args.video_frame_gt_path) as f:
             gt_frame_dict = json.load(f)
             for key in gt_frame_dict.keys():
@@ -535,10 +539,13 @@ if __name__ == '__main__':
                 for target_prompt in gt_frame_dict[key].keys():
                     replace_prompts[key].append(target_prompt)
                     prompts_for_video.append(target_prompt)
+        logger.info(f"Loaded {len(prompts_for_video)} prompts across {len(gt_frame_dict.keys())} video annotation entries")
 
+    logger.info(f"Loading ground-truth annotations from {json_folder}")
     gt_ann, image_shape, image_paths, id2name, name2id, im_id2imidx = eval_gt_lerfdata(Path(json_folder), Path(output_path),prompts,replace_prompts,args.dataset_type)
 
     eval_index_list = [int(idx) for idx in list(gt_ann.keys())] # range(1, frame_num+1)
+    logger.info(f"Loaded GT for {len(eval_index_list)} frames with image shape {image_shape}")
 
     if os.getenv("smooth_video_feature_pre",'f')=='t':
         video_smooth_frames = int(os.getenv("video_smooth_frames",2))
@@ -546,28 +553,81 @@ if __name__ == '__main__':
         video_smooth_frames = 0
     
     video_smooth_near_list = [[None for _ in range(2*video_smooth_frames)] for __  in range(len(eval_index_list))]
+    logger.info(f"Loading semantic features for {len(eval_index_list)} frames across {len(feat_dir)} level(s)")
     compressed_sem_feats = np.zeros((len(feat_dir), len(eval_index_list), *image_shape, args.feat_dim), dtype=np.float32)
     for i in range(len(feat_dir)):
         feat_paths_lvl = sorted(glob.glob(os.path.join(feat_dir[i], '*.npy')),
                                 key=lambda file_name: int(os.path.basename(file_name).split(".npy")[0]))
-
+        logger.info(f"Level {i + 1}/{len(feat_dir)}: found {len(feat_paths_lvl)} npy files under {feat_dir[i]}")
+        level_log_interval = max(1, len(eval_index_list) // 10) if len(eval_index_list) else 1
         for j, idx in enumerate(eval_index_list):
             compressed_sem_feats[i][j] = np.load(feat_paths_lvl[im_id2imidx[idx]])  
+            if len(eval_index_list) and (((j + 1) % level_log_interval == 0) or (j + 1 == len(eval_index_list))):
+                logger.info(f"Level {i + 1}: loaded semantic features for {j + 1}/{len(eval_index_list)} frames")
             
                 
                     
 
     # load e5_model
     if args.apply_video_search:
-        e5_model = SentenceTransformer(
-            "intfloat/e5-mistral-7b-instruct",
-            cache_folder=get_hf_cache_dir(),
-        )
+        logger.info("Initializing e5-mistral-7b-instruct model (SentenceTransformer)")
+        cache_roots = [
+            "/media/ssd1/users/sooran/.cache",
+            "/media/ssd1/users/sooran/.cache/huggingface",
+            "/media/ssd1/users/sooran/.cache/huggingface/hub",
+        ]
+        resolved_model_path = None
+        for cache_root in cache_roots:
+            local_snapshot_dir = os.path.join(
+                cache_root, "models--intfloat--e5-mistral-7b-instruct", "snapshots"
+            )
+            if not os.path.isdir(local_snapshot_dir):
+                continue
+            snapshot_candidates = [
+                os.path.join(local_snapshot_dir, d)
+                for d in os.listdir(local_snapshot_dir)
+                if os.path.isdir(os.path.join(local_snapshot_dir, d))
+            ]
+            if not snapshot_candidates:
+                continue
+            snapshot_candidates.sort(key=os.path.getmtime, reverse=True)
+            for candidate in snapshot_candidates:
+                shard_files = glob.glob(os.path.join(candidate, "model*.safetensors"))
+                if shard_files:
+                    resolved_model_path = candidate
+                    logger.info(f"Found local e5 snapshot with weights at {resolved_model_path}")
+                    break
+                else:
+                    logger.warning(
+                        f"Snapshot {candidate} missing model*.safetensors shards; skipping."
+                    )
+            if resolved_model_path is not None:
+                break
+        if resolved_model_path is not None:
+            logger.info("Loading e5 model strictly from local cache (offline mode)")
+            e5_model = SentenceTransformer(
+                resolved_model_path,
+                local_files_only=True,
+            )
+        else:
+            logger.warning(
+                "No local snapshot found under any known cache root; falling back to Hugging Face download."
+            )
+            e5_model = SentenceTransformer(
+                "intfloat/e5-mistral-7b-instruct",
+                cache_folder="/media/ssd1/users/sooran/.cache",
+            )
         e5_model.max_seq_length = 4096
         name2name_e5_embeddings = {}
-        for _, values in replace_prompts.items():
-            for prompt_name in values:
-                name2name_e5_embeddings[prompt_name] = e5_model.encode(prompt_name, prompt_name="summarization_query")
+        unique_prompt_names = sorted({prompt_name for values in replace_prompts.values() for prompt_name in values})
+        logger.info(f"Encoding {len(unique_prompt_names)} prompts with e5 model")
+        if len(unique_prompt_names) == 0:
+            logger.warning("No prompts found for e5 encoding; check video annotations.")
+        prompt_log_interval = max(1, len(unique_prompt_names) // 10) if len(unique_prompt_names) else 1
+        for idx, prompt_name in enumerate(unique_prompt_names):
+            name2name_e5_embeddings[prompt_name] = e5_model.encode(prompt_name, prompt_name="summarization_query")
+            if len(unique_prompt_names) and (((idx + 1) % prompt_log_interval == 0) or (idx + 1 == len(unique_prompt_names))):
+                logger.info(f"Encoded {idx + 1}/{len(unique_prompt_names)} prompts")
         import gc
         del e5_model
         gc.collect()
@@ -794,4 +854,3 @@ if __name__ == '__main__':
 
         logger.info(f"Video: Average vIoU: {sum([fm[0] for fm in video_res_list])/len(video_res_list)}, Average Accuracy: {sum([fm[1] for fm in video_res_list])/len(video_res_list)}")
         logger.info(f"Clip: Average vIoU: {sum([fm[0] for fm in clip_res_list])/len(clip_res_list)}, Average Accuracy: {sum([fm[1] for fm in clip_res_list])/len(clip_res_list)}")
-

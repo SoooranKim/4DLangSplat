@@ -31,9 +31,11 @@ if __name__ == '__main__':
                     default=512
                     )
     # parser.add_argument("--output_dim", type=int, default=3)
-    parser.add_argument('--num_workers',type=int,default=8)
+    parser.add_argument('--num_workers',type=int,default=0)
     parser.add_argument('--language_name', type = str, default = None)
     parser.add_argument('--output_name',type=str,default=None)
+    parser.add_argument('--ckpt_path', type=str, default=None)
+    parser.add_argument('--device', type=str, default='cuda:0')
     args = parser.parse_args()
     
     model_name = args.model_name
@@ -41,7 +43,10 @@ if __name__ == '__main__':
     # encoder_hidden_dims[-1] = args.output_dim
     decoder_hidden_dims = args.decoder_dims
     dataset_path = args.dataset_path
-    ckpt_path = f"ckpt/{model_name}/best_ckpt.pth"
+    if args.ckpt_path is not None:
+        ckpt_path = args.ckpt_path
+    else:
+        ckpt_path = f"ckpt/{model_name}/best_ckpt.pth"
 
     # data_dir = f"{dataset_path}/language_features"
     if args.language_name is None:
@@ -67,24 +72,29 @@ if __name__ == '__main__':
     checkpoint = torch.load(ckpt_path)
     train_dataset = Autoencoder_dataset(data_dir)
 
+    print(f"Creating DataLoader with num_workers={args.num_workers}")
     test_loader = DataLoader(
         dataset=train_dataset, 
         batch_size=256,
         shuffle=False, 
         num_workers=args.num_workers, 
-        drop_last=False   
+        drop_last=False,
+        pin_memory=False,
+        persistent_workers=False  # num_workers=0일 때는 항상 False
     )
+    print(f"DataLoader created successfully with num_workers={args.num_workers}")
 
+    device = args.device
     if os.getenv("use_vae",'f') == 't':
-        model = VanillaVAE(encoder_hidden_dims, decoder_hidden_dims, latent_dim=9).to("cuda:0")
+        model = VanillaVAE(encoder_hidden_dims, decoder_hidden_dims, latent_dim=9).to(device)
     else:
-        model = Autoencoder(encoder_hidden_dims, decoder_hidden_dims, feature_dim=args.feature_dims).to("cuda:0")
+        model = Autoencoder(encoder_hidden_dims, decoder_hidden_dims, feature_dim=args.feature_dims).to(device)
 
     model.load_state_dict(checkpoint)
     model.eval()
 
     for idx, feature in tqdm(enumerate(test_loader)):
-        data = feature.to("cuda:0")
+        data = feature.to(device)
         data = data.to(torch.float32)
         
         with torch.no_grad():
