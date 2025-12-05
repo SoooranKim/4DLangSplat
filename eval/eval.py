@@ -144,7 +144,7 @@ def activate_stream(sem_map,
                     image, 
                     clip_model, 
                     image_name: Path = None,
-                    # img_ann: Dict = None, 
+                    img_ann: Dict = None, 
                     thresh : float = 0.5, 
                     colormap_options = None,
                     name2id = None,
@@ -204,7 +204,7 @@ def activate_stream(sem_map,
                 output_path_compo.parent.mkdir(exist_ok=True, parents=True)
                 colormap_saving(valid_composited, colormap_options, output_path_compo)
             
-            if i==0 and visualize_results:
+            if i==0 and visualize_results and img_ann is not None:
                 background_only = image.clone()
                 background_only = background_only * 0.6
                 output_path_background = image_name / 'background' / f'{clip_model.positives[k]}_{i}'
@@ -213,14 +213,15 @@ def activate_stream(sem_map,
                 
                 overlay_color = torch.tensor([128 / 255, 0.0, 128 / 255]).cuda()  
                 promtp_name = clip_model.positives[k]
-                mask_gt = img_ann[promtp_name]['mask'].astype(np.uint8)
-                overlay_layer = overlay_color * 0.5  
-                annotated_image = image.clone()
-                annotated_image[mask_gt.squeeze() > 0] = annotated_image[mask_gt.squeeze() > 0] * 0.5 + overlay_layer * 255
+                if promtp_name in img_ann:
+                    mask_gt = img_ann[promtp_name]['mask'].astype(np.uint8)
+                    overlay_layer = overlay_color * 0.5  
+                    annotated_image = image.clone()
+                    annotated_image[mask_gt.squeeze() > 0] = annotated_image[mask_gt.squeeze() > 0] * 0.5 + overlay_layer * 255
 
-                output_path_annotation = image_name / 'annotation' / f'{clip_model.positives[k]}_{i}'
-                output_path_annotation.parent.mkdir(exist_ok=True, parents=True)
-                colormap_saving(annotated_image, colormap_options, output_path_annotation)
+                    output_path_annotation = image_name / 'annotation' / f'{clip_model.positives[k]}_{i}'
+                    output_path_annotation.parent.mkdir(exist_ok=True, parents=True)
+                    colormap_saving(annotated_image, colormap_options, output_path_annotation)
             
 
             if os.getenv("adaptive_thresh",'f') == 't':
@@ -244,11 +245,13 @@ def activate_stream(sem_map,
             mask_lvl[i] = mask_pred
             
             promtp_name = clip_model.positives[k]
-            mask_gt = torch.from_numpy(img_ann[promtp_name]['mask'].astype(np.uint8)).to(device)
-
-            intersection = torch.sum(torch.logical_and(mask_gt, mask_pred))
-            union = torch.sum(torch.logical_or(mask_gt, mask_pred))
-            iou = torch.sum(intersection) / torch.sum(union)
+            if img_ann is not None and promtp_name in img_ann:
+                mask_gt = torch.from_numpy(img_ann[promtp_name]['mask'].astype(np.uint8)).to(device)
+                intersection = torch.sum(torch.logical_and(mask_gt, mask_pred))
+                union = torch.sum(torch.logical_or(mask_gt, mask_pred))
+                iou = torch.sum(intersection) / torch.sum(union) if torch.sum(union) > 0 else 0.0
+            else:
+                iou = 0.0
             iou_lvl[i] = iou
 
 
@@ -326,20 +329,44 @@ def cal_avg_video_feature(video_model, mask, video_features_dim3, query_embeddin
     mean_cos_similarity = cos_similarities.mean()
     return mean_cos_similarity
 
-def drawn_similarity_images(similarity_list,save_path,thresh_hold=0.):
+def drawn_similarity_images(similarity_list,save_path,thresh_hold=0., gt_intervals=None):
     indices = [x[0] for x in similarity_list]
     values = [x[1] for x in similarity_list]
     plt.figure(figsize=(10, 6))  
-    plt.plot(indices, values, marker='o', linestyle='-', color='b', label='Similarity')
-    plt.axhline(y=thresh_hold, color='r', linestyle='--', label=f'Threshold: {thresh_hold}')
+    ax = plt.gca()
+    
+    # Calculate y-axis range with padding
+    y_min, y_max = min(values) if values else 0, max(values) if values else 1
+    y_range = y_max - y_min
+    y_min = y_min - 0.05 * y_range if y_range > 0 else y_min - 0.05
+    y_max = y_max + 0.05 * y_range if y_range > 0 else y_max + 0.05
+    
+    # Draw GT intervals as colored background regions
+    gt_interval_drawn = False
+    if gt_intervals is not None and len(gt_intervals) > 0:
+        for interval in gt_intervals:
+            start_idx, end_idx = interval[0], interval[1]
+            # Clamp intervals to valid range
+            start_idx = max(start_idx, min(indices)) if indices else start_idx
+            end_idx = min(end_idx, max(indices)) if indices else end_idx
+            if start_idx <= end_idx:
+                ax.axvspan(start_idx, end_idx, alpha=0.3, color='green', 
+                          label='GT Interval' if not gt_interval_drawn else '')
+                gt_interval_drawn = True
+    
+    plt.plot(indices, values, marker='o', linestyle='-', color='b', label='Similarity', markersize=4)
+    plt.axhline(y=thresh_hold, color='r', linestyle='--', linewidth=1.5, label=f'Threshold: {thresh_hold:.3f}')
     
     plt.title('Similarity across Different Indices')
-    plt.xlabel('Index')
+    plt.xlabel('Frame Index')
     plt.ylabel('Cosine Similarity')
+    plt.ylim(y_min, y_max)
     plt.legend()
 
-    plt.grid(True)
-    plt.savefig(os.path.join(save_path))
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_path), dpi=150, bbox_inches='tight')
+    plt.close()
 
 
 def plot_confusion_matrix(y_true, y_pred, labels=None,title='default',output_path='.'):
@@ -636,15 +663,105 @@ if __name__ == '__main__':
 
     clip_model = OpenCLIPNetwork(device)
     checkpoint = torch.load(args.ae_ckpt_path, map_location=device)
-    model = Autoencoder(args.encoder_hidden_dims, args.decoder_hidden_dims).to(device)
-    model.load_state_dict(checkpoint)
+    
+    # Infer architecture from checkpoint if mismatch detected
+    def infer_architecture_from_checkpoint(checkpoint, feature_dim=512):
+        """Infer encoder and decoder dimensions from checkpoint keys"""
+        encoder_dims = []
+        decoder_dims = []
+        
+        # Extract all Linear layer weights from encoder
+        encoder_linear_weights = {}
+        for key in checkpoint.keys():
+            if key.startswith('encoder.') and key.endswith('.weight'):
+                idx = int(key.split('.')[1])
+                encoder_linear_weights[idx] = checkpoint[key]
+        
+        # Sort by index and extract dimensions
+        sorted_indices = sorted(encoder_linear_weights.keys())
+        for idx in sorted_indices:
+            weight = encoder_linear_weights[idx]
+            # Skip if not 2D (should be [out_dim, in_dim] for Linear layer)
+            if len(weight.shape) != 2:
+                continue
+            out_dim, in_dim = weight.shape
+            if idx == 0:
+                # First layer: feature_dim -> out_dim
+                encoder_dims.append(out_dim)
+            else:
+                # Subsequent layers: should match previous output
+                if in_dim == encoder_dims[-1]:
+                    encoder_dims.append(out_dim)
+                else:
+                    # Mismatch, but continue (might be due to BatchNorm in between)
+                    if len(encoder_dims) > 0:
+                        encoder_dims.append(out_dim)
+        
+        # Extract all Linear layer weights from decoder
+        decoder_linear_weights = {}
+        for key in checkpoint.keys():
+            if key.startswith('decoder.') and key.endswith('.weight'):
+                idx = int(key.split('.')[1])
+                decoder_linear_weights[idx] = checkpoint[key]
+        
+        # Sort by index and extract dimensions
+        sorted_indices = sorted(decoder_linear_weights.keys())
+        for idx in sorted_indices:
+            weight = decoder_linear_weights[idx]
+            # Skip if not 2D (should be [out_dim, in_dim] for Linear layer)
+            if len(weight.shape) != 2:
+                continue
+            out_dim, in_dim = weight.shape
+            if idx == 0:
+                # First layer: encoder_dims[-1] -> out_dim
+                decoder_dims.append(out_dim)
+            else:
+                # Subsequent layers: should match previous output
+                if in_dim == decoder_dims[-1]:
+                    decoder_dims.append(out_dim)
+        
+        return encoder_dims, decoder_dims
+    
+    # Try to load with provided architecture first
+    try:
+        model = Autoencoder(args.encoder_hidden_dims, args.decoder_hidden_dims).to(device)
+        model.load_state_dict(checkpoint, strict=True)
+        logger.info(f"Successfully loaded checkpoint with provided architecture")
+    except RuntimeError as e:
+        logger.warning(f"Architecture mismatch detected. Inferring architecture from checkpoint...")
+        # Infer architecture from checkpoint
+        inferred_encoder_dims, inferred_decoder_dims = infer_architecture_from_checkpoint(checkpoint, feature_dim=512)
+        logger.info(f"Inferred encoder_dims: {inferred_encoder_dims}")
+        logger.info(f"Inferred decoder_dims: {inferred_decoder_dims}")
+        
+        # Create model with inferred architecture
+        model = Autoencoder(inferred_encoder_dims, inferred_decoder_dims).to(device)
+        model.load_state_dict(checkpoint, strict=True)
+        logger.info(f"Successfully loaded checkpoint with inferred architecture")
+    
     model.eval()
     # load video autoencoder
     if args.apply_video_search:
         assert args.video_ae_ckpt_path is not None
-        video_model = Autoencoder(args.video_encoder_hidden_dims,args.video_decoder_hidden_dims,feature_dim=4096).to(device)
-        video_checkpoint = torch.load(args.video_ae_ckpt_path,map_location=device)
-        video_model.load_state_dict(video_checkpoint)
+        # Try to load video autoencoder with provided architecture first
+        try:
+            video_model = Autoencoder(args.video_encoder_hidden_dims,args.video_decoder_hidden_dims,feature_dim=4096).to(device)
+            video_checkpoint = torch.load(args.video_ae_ckpt_path,map_location=device)
+            video_model.load_state_dict(video_checkpoint, strict=True)
+            logger.info(f"Successfully loaded video checkpoint with provided architecture")
+        except RuntimeError as e:
+            logger.warning(f"Video architecture mismatch detected. Inferring architecture from checkpoint...")
+            video_checkpoint = torch.load(args.video_ae_ckpt_path,map_location=device)
+            # Infer architecture from checkpoint
+            inferred_encoder_dims, inferred_decoder_dims = infer_architecture_from_checkpoint(video_checkpoint, feature_dim=4096)
+            logger.info(f"Inferred video encoder_dims: {inferred_encoder_dims}")
+            logger.info(f"Inferred video decoder_dims: {inferred_decoder_dims}")
+            
+            # Create model with inferred architecture
+            video_model = Autoencoder(inferred_encoder_dims, inferred_decoder_dims, feature_dim=4096).to(device)
+            video_model.load_state_dict(video_checkpoint, strict=True)
+            logger.info(f"Successfully loaded video checkpoint with inferred architecture")
+        
         video_model.eval()
     else:
         video_model = None
@@ -708,7 +825,7 @@ if __name__ == '__main__':
 
         clip_model.set_positives(list(img_ann.keys()))
         c_iou_list, c_lvl, prompt_iou_lvl_dict, chosen_mask_dict, chosen_mask_for_video_dict = activate_stream(restored_feat, rgb_img, clip_model, image_name,
-                                            thresh=mask_thresh, colormap_options=colormap_options, name2id=name2id,scale=args.scale,chose_mask_strategy=args.chose_mask_strategy, imageid=j, visualize_results=args.visualize_results)
+                                            img_ann=img_ann, thresh=mask_thresh, colormap_options=colormap_options, name2id=name2id,scale=args.scale,chose_mask_strategy=args.chose_mask_strategy, imageid=j, visualize_results=args.visualize_results)
 
 
         for key, (iou, lvl, lvl_all, tresh_all) in prompt_iou_lvl_dict.items():
@@ -825,8 +942,23 @@ if __name__ == '__main__':
                 
             clip_thresh = sum(tup[1] for tup in sorted_clip_similarity) / len(sorted_clip_similarity)
             
-            drawn_similarity_images(sorted_video_similarity, os.path.join(output_path,f"{key}_video_feat_sim.png"),thresh_hold=video_thresh)
-            drawn_similarity_images(sorted_clip_similarity, os.path.join(output_path,f"{key}_clip_feat_sim.png"),thresh_hold=clip_thresh)
+            # Get GT intervals for this key from video_annotations.json
+            # GT intervals should be in npy index format (same as similarity_list indices)
+            gt_intervals_for_key = None
+            for base_key, video_prompts in gt_frame_dict.items():
+                for gt_key in video_prompts.keys():
+                    if key == gt_key:
+                        gt_intervals_raw = video_prompts[key]
+                        if gt_intervals_raw and len(gt_intervals_raw) > 0:
+                            # GT intervals from video_annotations.json are already in npy index format
+                            # (same format as used in evaluate_video_feature)
+                            gt_intervals_for_key = [(interval[0], interval[1]) for interval in gt_intervals_raw]
+                        break
+                if gt_intervals_for_key is not None:
+                    break
+            
+            drawn_similarity_images(sorted_video_similarity, os.path.join(output_path,f"{key}_video_feat_sim.png"),thresh_hold=video_thresh, gt_intervals=gt_intervals_for_key)
+            drawn_similarity_images(sorted_clip_similarity, os.path.join(output_path,f"{key}_clip_feat_sim.png"),thresh_hold=clip_thresh, gt_intervals=gt_intervals_for_key)
 
             for base_key, video_prompts in gt_frame_dict.items():
                 for gt_key in video_prompts.keys():
