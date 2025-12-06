@@ -557,19 +557,42 @@ if __name__ == '__main__':
     
     replace_prompts = {}
     prompts_for_video = []
+    video_prompts_to_intervals = {}  # Store prompt -> intervals mapping
     if args.apply_video_search:
         logger.info(f"Loading video frame annotations from {args.video_frame_gt_path}")
         with open(args.video_frame_gt_path) as f:
             gt_frame_dict = json.load(f)
-            for key in gt_frame_dict.keys():
-                replace_prompts[key] = []
-                for target_prompt in gt_frame_dict[key].keys():
-                    replace_prompts[key].append(target_prompt)
-                    prompts_for_video.append(target_prompt)
-        logger.info(f"Loaded {len(prompts_for_video)} prompts across {len(gt_frame_dict.keys())} video annotation entries")
+            # Support both old nested structure and new flat structure
+            if isinstance(list(gt_frame_dict.values())[0], dict):
+                # Old nested structure: {"chicken container": {"closed chicken container": [...], ...}}
+                for key in gt_frame_dict.keys():
+                    replace_prompts[key] = []
+                    for target_prompt in gt_frame_dict[key].keys():
+                        replace_prompts[key].append(target_prompt)
+                        prompts_for_video.append(target_prompt)
+                        video_prompts_to_intervals[target_prompt] = gt_frame_dict[key][target_prompt]
+            else:
+                # New flat structure: {"closed chicken container": [...], "opened chicken container": [...]}
+                for prompt, intervals in gt_frame_dict.items():
+                    prompts_for_video.append(prompt)
+                    video_prompts_to_intervals[prompt] = intervals
+        logger.info(f"Loaded {len(prompts_for_video)} prompts from video annotations")
 
     logger.info(f"Loading ground-truth annotations from {json_folder}")
     gt_ann, image_shape, image_paths, id2name, name2id, im_id2imidx = eval_gt_lerfdata(Path(json_folder), Path(output_path),prompts,replace_prompts,args.dataset_type)
+    
+    # Add video prompts directly to gt_ann if they don't exist in COCO annotations
+    if args.apply_video_search:
+        h, w = image_shape
+        for idx in gt_ann.keys():
+            img_ann = gt_ann[idx]
+            for prompt in prompts_for_video:
+                if prompt not in img_ann:
+                    # Add empty mask and bbox for prompts not in COCO annotations
+                    img_ann[prompt] = {
+                        'mask': np.zeros((h, w), dtype=np.uint8),
+                        'bboxes': np.array([]).reshape(0, 4)
+                    }
 
     eval_index_list = [int(idx) for idx in list(gt_ann.keys())] # range(1, frame_num+1)
     logger.info(f"Loaded GT for {len(eval_index_list)} frames with image shape {image_shape}")
@@ -646,7 +669,8 @@ if __name__ == '__main__':
             )
         e5_model.max_seq_length = 4096
         name2name_e5_embeddings = {}
-        unique_prompt_names = sorted({prompt_name for values in replace_prompts.values() for prompt_name in values})
+        # Use prompts_for_video directly (works for both old nested and new flat structure)
+        unique_prompt_names = sorted(set(prompts_for_video))
         logger.info(f"Encoding {len(unique_prompt_names)} prompts with e5 model")
         if len(unique_prompt_names) == 0:
             logger.warning("No prompts found for e5 encoding; check video annotations.")
@@ -945,33 +969,45 @@ if __name__ == '__main__':
             # Get GT intervals for this key from video_annotations.json
             # GT intervals should be in npy index format (same as similarity_list indices)
             gt_intervals_for_key = None
-            for base_key, video_prompts in gt_frame_dict.items():
-                for gt_key in video_prompts.keys():
-                    if key == gt_key:
-                        gt_intervals_raw = video_prompts[key]
-                        if gt_intervals_raw and len(gt_intervals_raw) > 0:
-                            # GT intervals from video_annotations.json are already in npy index format
-                            # (same format as used in evaluate_video_feature)
-                            gt_intervals_for_key = [(interval[0], interval[1]) for interval in gt_intervals_raw]
-                        break
-                if gt_intervals_for_key is not None:
-                    break
+            if key in video_prompts_to_intervals:
+                gt_intervals_raw = video_prompts_to_intervals[key]
+                if gt_intervals_raw and len(gt_intervals_raw) > 0:
+                    # GT intervals from video_annotations.json are already in npy index format
+                    # (same format as used in evaluate_video_feature)
+                    gt_intervals_for_key = [(interval[0], interval[1]) for interval in gt_intervals_raw]
             
             drawn_similarity_images(sorted_video_similarity, os.path.join(output_path,f"{key}_video_feat_sim.png"),thresh_hold=video_thresh, gt_intervals=gt_intervals_for_key)
             drawn_similarity_images(sorted_clip_similarity, os.path.join(output_path,f"{key}_clip_feat_sim.png"),thresh_hold=clip_thresh, gt_intervals=gt_intervals_for_key)
 
-            for base_key, video_prompts in gt_frame_dict.items():
-                for gt_key in video_prompts.keys():
-                    if key == gt_key:
-                        video_res =  evaluate_video_feature(sorted_video_similarity,video_prompts[key],threshhold=video_thresh)
-                        clip_res =  evaluate_video_feature(sorted_clip_similarity,video_prompts[key],threshhold=clip_thresh)
-                        
+            # Evaluate video feature if GT intervals exist for this prompt
+            if key in video_prompts_to_intervals:
+                gt_intervals = video_prompts_to_intervals[key]
+                if gt_intervals and len(gt_intervals) > 0:
+                    # Check if this prompt has valid GT mask (from COCO annotations)
+                    # If not, vIoU cannot be calculated meaningfully
+                    has_gt_mask = False
+                    for idx in eval_index_list:
+                        if f'{idx}' in gt_ann and key in gt_ann[f'{idx}']:
+                            mask = gt_ann[f'{idx}'][key]['mask']
+                            if mask is not None and np.sum(mask) > 0:
+                                has_gt_mask = True
+                                break
+                    
+                    video_res = evaluate_video_feature(sorted_video_similarity, gt_intervals, threshhold=video_thresh)
+                    clip_res = evaluate_video_feature(sorted_clip_similarity, gt_intervals, threshhold=clip_thresh)
+                    
+                    if has_gt_mask:
                         logger.info(f"Key: {key}. Video Feature: vIoU:{video_res['average_iou']}, Accuracy:{video_res['accuracy']}. Clip Feature: vIoU:{clip_res['average_iou']}, Accuracy:{clip_res['accuracy']}")
                         video_res_list.append((video_res['average_iou'],video_res['accuracy']))
                         clip_res_list.append((clip_res['average_iou'],clip_res['accuracy']))
-                        if args.detail_results:
-                            plot_confusion_matrix(video_res['label_list'],video_res['predict_list'],[False,True], f'video-{key}',output_path)
-                            plot_confusion_matrix(clip_res['label_list'],clip_res['predict_list'],[False,True], f'clip-{key}',output_path)
+                    else:
+                        logger.info(f"Key: {key}. Video Feature: vIoU:N/A (no GT mask), Accuracy:{video_res['accuracy']}. Clip Feature: vIoU:N/A (no GT mask), Accuracy:{clip_res['accuracy']}")
+                        video_res_list.append((None, video_res['accuracy']))
+                        clip_res_list.append((None, clip_res['accuracy']))
+                    
+                    if args.detail_results:
+                        plot_confusion_matrix(video_res['label_list'],video_res['predict_list'],[False,True], f'video-{key}',output_path)
+                        plot_confusion_matrix(clip_res['label_list'],clip_res['predict_list'],[False,True], f'clip-{key}',output_path)
             if args.detail_results:
                 with open(os.path.join(output_path,f'video-query-results-{key}.csv'), mode='w', newline='', encoding='utf-8') as file:
                     writer = csv.writer(file)
@@ -984,5 +1020,11 @@ if __name__ == '__main__':
                     writer.writerow(["video similarity"]+[fm[1] for fm in sorted_video_similarity])
                     writer.writerow(["video meaniou"]+[fm[2] for fm in sorted_video_similarity])
 
-        logger.info(f"Video: Average vIoU: {sum([fm[0] for fm in video_res_list])/len(video_res_list)}, Average Accuracy: {sum([fm[1] for fm in video_res_list])/len(video_res_list)}")
-        logger.info(f"Clip: Average vIoU: {sum([fm[0] for fm in clip_res_list])/len(clip_res_list)}, Average Accuracy: {sum([fm[1] for fm in clip_res_list])/len(clip_res_list)}")
+        # Calculate average vIoU and accuracy, handling None values for vIoU
+        video_vious = [fm[0] for fm in video_res_list if fm[0] is not None]
+        clip_vious = [fm[0] for fm in clip_res_list if fm[0] is not None]
+        avg_video_viou = sum(video_vious) / len(video_vious) if video_vious else None
+        avg_clip_viou = sum(clip_vious) / len(clip_vious) if clip_vious else None
+        
+        logger.info(f"Video: Average vIoU: {avg_video_viou if avg_video_viou is not None else 'N/A (no GT masks)'}, Average Accuracy: {sum([fm[1] for fm in video_res_list])/len(video_res_list)}")
+        logger.info(f"Clip: Average vIoU: {avg_clip_viou if avg_clip_viou is not None else 'N/A (no GT masks)'}, Average Accuracy: {sum([fm[1] for fm in clip_res_list])/len(clip_res_list)}")
